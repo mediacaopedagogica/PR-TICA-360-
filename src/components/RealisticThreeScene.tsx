@@ -126,6 +126,8 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
 
     const loader = new GLTFLoader();
     const disposableRoots: THREE.Object3D[] = [];
+    const collisionBoxes: THREE.Box3[] = [];
+    const selectionHelpers: THREE.BoxHelper[] = [];
     const loadProblems: AssetLoadProblem[] = [];
     let loaded = 0;
     let cancelled = false;
@@ -178,6 +180,15 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
             gltf.scene.traverse((child) => { child.userData.placedObjectId = item.id; });
             scene.add(gltf.scene);
             disposableRoots.push(gltf.scene);
+            collisionBoxes.push(new THREE.Box3().setFromObject(gltf.scene));
+            if (item.id === selectedObjectId) {
+              const helper = new THREE.BoxHelper(gltf.scene, 0x60a5fa);
+              const helperMaterial = helper.material as THREE.LineBasicMaterial;
+              helperMaterial.transparent = true;
+              helperMaterial.opacity = 0.65;
+              scene.add(helper);
+              selectionHelpers.push(helper);
+            }
             loaded += 1;
             setLoadedCount(loaded);
           } catch (error) {
@@ -253,9 +264,16 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
         const margin = 0.35;
         const nextX = THREE.MathUtils.clamp(camera.position.x + move.x, -roomDimensions.width / 2 + margin, roomDimensions.width / 2 - margin);
         const nextZ = THREE.MathUtils.clamp(camera.position.z + move.z, -roomDimensions.depth / 2 + margin, roomDimensions.depth / 2 - margin);
-        const applied = new THREE.Vector3(nextX - camera.position.x, 0, nextZ - camera.position.z);
-        camera.position.add(applied);
-        controls.target.add(applied);
+        const cameraRadius = 0.28;
+        const blockedByObject = collisionBoxes.some((box) =>
+          nextX >= box.min.x - cameraRadius && nextX <= box.max.x + cameraRadius &&
+          nextZ >= box.min.z - cameraRadius && nextZ <= box.max.z + cameraRadius
+        );
+        if (!blockedByObject) {
+          const applied = new THREE.Vector3(nextX - camera.position.x, 0, nextZ - camera.position.z);
+          camera.position.add(applied);
+          controls.target.add(applied);
+        }
       }
       controls.update();
       renderer.render(scene, camera);
@@ -281,6 +299,11 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
       mount.removeEventListener("keydown", handleKeyDown);
       mount.removeEventListener("keyup", handleKeyUp);
       controls.dispose();
+      selectionHelpers.forEach((helper) => {
+        helper.geometry.dispose();
+        (helper.material as THREE.Material).dispose();
+        scene.remove(helper);
+      });
       disposableRoots.forEach((root) => {
         root.traverse((child) => {
           const mesh = child as THREE.Mesh;
@@ -296,7 +319,7 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
       renderer.dispose();
       if (renderer.domElement.parentElement === mount) mount.removeChild(renderer.domElement);
     };
-  }, [roomDimensions.width, roomDimensions.depth, roomDimensions.height, placedObjects, appliedMaterials, mode, onSelectObject]);
+  }, [roomDimensions.width, roomDimensions.depth, roomDimensions.height, placedObjects, appliedMaterials, mode, selectedObjectId, onSelectObject]);
 
   return (
     <div

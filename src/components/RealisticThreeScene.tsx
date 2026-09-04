@@ -3,8 +3,9 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { AppliedMaterials, PlacedObject } from "../types";
-import { findThreeAssetByCatalogName } from "../threeAssetManifest";
+import { findThreeAssetByCatalogName, objectParticipatesInCollision } from "../threeAssetManifest";
 import { createSurfaceMaterial, disposeSurfaceMaterial } from "../threeMaterials";
+import { getRotatedFootprint, resolveObjectPlacement } from "../spatialPlacement";
 
 interface RealisticThreeSceneProps {
   roomDimensions: { width: number; depth: number; height: number };
@@ -13,6 +14,8 @@ interface RealisticThreeSceneProps {
   mode?: "project" | "360";
   selectedObjectId?: string | null;
   onSelectObject?: (id: string | null) => void;
+  onUpdateObject?: (id: string, updated: Partial<PlacedObject>) => void;
+  lockedObjectIds?: string[];
 }
 
 interface AssetLoadProblem {
@@ -33,10 +36,33 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
   mode = "project",
   selectedObjectId = null,
   onSelectObject,
+  onUpdateObject,
+  lockedObjectIds = [],
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const [problems, setProblems] = useState<AssetLoadProblem[]>([]);
   const [loadedCount, setLoadedCount] = useState(0);
+  const [interactionNotice, setInteractionNotice] = useState<string | null>(null);
+
+  const selectedObject = placedObjects.find((item) => item.id === selectedObjectId) || null;
+  const selectedIsLocked = selectedObject ? lockedObjectIds.includes(selectedObject.id) : false;
+
+  const applySelectedTransform = (requested: Partial<Pick<PlacedObject, "x" | "y" | "rotation">>) => {
+    if (!selectedObject || selectedIsLocked || !onUpdateObject) return;
+    const result = resolveObjectPlacement(
+      selectedObject,
+      requested,
+      roomDimensions,
+      placedObjects,
+      (item) => objectParticipatesInCollision(item.name),
+    );
+    if (!result.valid) {
+      setInteractionNotice(`Movimento bloqueado: colisão com ${result.conflictingObject?.name || "outro objeto"}.`);
+      return;
+    }
+    onUpdateObject(selectedObject.id, result.update);
+    setInteractionNotice("Posição sincronizada com a planta 2D e o salvamento do projeto.");
+  };
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -126,7 +152,8 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
 
     const loader = new GLTFLoader();
     const disposableRoots: THREE.Object3D[] = [];
-    const collisionBoxes: THREE.Box3[] = [];
+    const collisionBoxes = new Map<string, THREE.Box3>();
+    const loadedObjects = new Map<string, { root: THREE.Object3D; item: PlacedObject }>();
     const selectionHelpers: THREE.BoxHelper[] = [];
     const loadProblems: AssetLoadProblem[] = [];
     let loaded = 0;
@@ -142,18 +169,19 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
       const sy = item.height / size.y;
       const sz = item.depth / size.z;
       root.scale.set(sx, sy, sz);
+      root.rotation.y = THREE.MathUtils.degToRad(-item.rotation);
       root.updateMatrixWorld(true);
 
       const fitted = new THREE.Box3().setFromObject(root);
       const fittedCenter = fitted.getCenter(new THREE.Vector3());
       const fittedMin = fitted.min;
-
-      const targetX = item.x + item.width / 2 - roomDimensions.width / 2;
-      const targetZ = item.y + item.depth / 2 - roomDimensions.depth / 2;
+      const footprint = getRotatedFootprint(item);
+      const targetX = item.x + footprint.width / 2 - roomDimensions.width / 2;
+      const targetZ = item.y + footprint.depth / 2 - roomDimensions.depth / 2;
       root.position.x += targetX - fittedCenter.x;
       root.position.z += targetZ - fittedCenter.z;
       root.position.y += -fittedMin.y;
-      root.rotation.y = THREE.MathUtils.degToRad(-item.rotation);
+      root.updateMatrixWorld(true);
 
       root.traverse((child) => {
         const mesh = child as THREE.Mesh;
@@ -161,6 +189,22 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
           mesh.castShadow = true;
           mesh.receiveShadow = true;
         }
+      });
+    };
+
+    const placeLoadedRoot = (root: THREE.Object3D, item: PlacedObject) => {
+      const current = new THREE.Box3().setFromObject(root);
+      const center = current.getCenter(new THREE.Vector3());
+      const footprint = getRotatedFootprint(item);
+      const targetX = item.x + footprint.width / 2 - roomDimensions.width / 2;
+      const targetZ = item.y + footprint.depth / 2 - roomDimensions.depth / 2;
+      root.position.x += targetX - center.x;
+      root.position.z += targetZ - center.z;
+      root.updateMatrixWorld(true);
+      const updatedBox = new THREE.Box3().setFromObject(root);
+      collisionBoxes.set(item.id, updatedBox);
+      selectionHelpers.forEach((helper) => {
+        if (helper.userData.placedObjectId === item.id) helper.update();
       });
     };
 
@@ -180,9 +224,11 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
             gltf.scene.traverse((child) => { child.userData.placedObjectId = item.id; });
             scene.add(gltf.scene);
             disposableRoots.push(gltf.scene);
-            collisionBoxes.push(new THREE.Box3().setFromObject(gltf.scene));
+            loadedObjects.set(item.id, { root: gltf.scene, item });
+            collisionBoxes.set(item.id, new THREE.Box3().setFromObject(gltf.scene));
             if (item.id === selectedObjectId) {
               const helper = new THREE.BoxHelper(gltf.scene, 0x60a5fa);
+              helper.userData.placedObjectId = item.id;
               const helperMaterial = helper.material as THREE.LineBasicMaterial;
               helperMaterial.transparent = true;
               helperMaterial.opacity = 0.65;
@@ -208,21 +254,120 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    const handlePointerSelect = (event: PointerEvent) => {
+    const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const floorPoint = new THREE.Vector3();
+    let dragState: {
+      id: string;
+      root: THREE.Object3D;
+      item: PlacedObject;
+      offsetX: number;
+      offsetY: number;
+      pending: Pick<PlacedObject, "x" | "y" | "rotation">;
+    } | null = null;
+
+    const updatePointerRay = (event: PointerEvent) => {
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.x = ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
       pointer.y = -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
-      const hit = raycaster.intersectObjects(scene.children, true).find((entry) => entry.object.userData?.placedObjectId);
-      onSelectObject?.(hit?.object.userData?.placedObjectId || null);
-      mount.focus();
     };
-    renderer.domElement.addEventListener("pointerup", handlePointerSelect);
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      updatePointerRay(event);
+      const hit = raycaster.intersectObjects(scene.children, true).find((entry) => entry.object.userData?.placedObjectId);
+      const id = hit?.object.userData?.placedObjectId as string | undefined;
+      onSelectObject?.(id || null);
+      mount.focus();
+
+      if (!id || lockedObjectIds.includes(id) || !onUpdateObject) return;
+      const loaded = loadedObjects.get(id);
+      if (!loaded || !raycaster.ray.intersectPlane(floorPlane, floorPoint)) return;
+      const planX = floorPoint.x + roomDimensions.width / 2;
+      const planY = floorPoint.z + roomDimensions.depth / 2;
+      dragState = {
+        id,
+        root: loaded.root,
+        item: loaded.item,
+        offsetX: planX - loaded.item.x,
+        offsetY: planY - loaded.item.y,
+        pending: { x: loaded.item.x, y: loaded.item.y, rotation: loaded.item.rotation },
+      };
+      controls.enabled = false;
+      renderer.domElement.style.cursor = "grabbing";
+      renderer.domElement.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!dragState) return;
+      updatePointerRay(event);
+      if (!raycaster.ray.intersectPlane(floorPlane, floorPoint)) return;
+      const requestedX = floorPoint.x + roomDimensions.width / 2 - dragState.offsetX;
+      const requestedY = floorPoint.z + roomDimensions.depth / 2 - dragState.offsetY;
+      const result = resolveObjectPlacement(
+        dragState.item,
+        { x: requestedX, y: requestedY },
+        roomDimensions,
+        placedObjects,
+        (item) => objectParticipatesInCollision(item.name),
+      );
+      if (!result.valid) {
+        setInteractionNotice(`Movimento bloqueado: colisão com ${result.conflictingObject?.name || "outro objeto"}.`);
+        return;
+      }
+      dragState.pending = result.update;
+      placeLoadedRoot(dragState.root, { ...dragState.item, ...result.update });
+      setInteractionNotice("Movendo com encaixe de 5 cm.");
+      event.preventDefault();
+    };
+
+    const finishPointerDrag = (event: PointerEvent) => {
+      if (!dragState) return;
+      onUpdateObject?.(dragState.id, dragState.pending);
+      setInteractionNotice("Posição sincronizada com a planta 2D e o salvamento do projeto.");
+      dragState = null;
+      controls.enabled = true;
+      renderer.domElement.style.cursor = "grab";
+      if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+    };
+    renderer.domElement.style.cursor = "grab";
+    renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.addEventListener("pointermove", handlePointerMove);
+    renderer.domElement.addEventListener("pointerup", finishPointerDrag);
+    renderer.domElement.addEventListener("pointercancel", finishPointerDrag);
 
     const pressed = new Set<string>();
     const navigationKeys = new Set(["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"]);
     const handleKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
+      const selected = selectedObjectId ? placedObjects.find((item) => item.id === selectedObjectId) : null;
+      const canTransform = selected && !lockedObjectIds.includes(selected.id) && onUpdateObject;
+      const isObjectMove = event.shiftKey && navigationKeys.has(key) && key.startsWith("arrow");
+      const isObjectRotate = key === "q" || key === "e";
+      if (canTransform && (isObjectMove || isObjectRotate)) {
+        event.preventDefault();
+        const requested = isObjectRotate
+          ? { rotation: selected.rotation + (key === "q" ? -15 : 15) }
+          : {
+              x: selected.x + (key === "arrowleft" ? -0.05 : key === "arrowright" ? 0.05 : 0),
+              y: selected.y + (key === "arrowup" ? -0.05 : key === "arrowdown" ? 0.05 : 0),
+            };
+        const result = resolveObjectPlacement(
+          selected,
+          requested,
+          roomDimensions,
+          placedObjects,
+          (item) => objectParticipatesInCollision(item.name),
+        );
+        if (result.valid) {
+          onUpdateObject(selected.id, result.update);
+          setInteractionNotice("Transformação aplicada e sincronizada no projeto.");
+        } else {
+          setInteractionNotice(`Transformação bloqueada: colisão com ${result.conflictingObject?.name || "outro objeto"}.`);
+        }
+        return;
+      }
       if (!navigationKeys.has(key)) return;
       event.preventDefault();
       pressed.add(key);
@@ -265,7 +410,8 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
         const nextX = THREE.MathUtils.clamp(camera.position.x + move.x, -roomDimensions.width / 2 + margin, roomDimensions.width / 2 - margin);
         const nextZ = THREE.MathUtils.clamp(camera.position.z + move.z, -roomDimensions.depth / 2 + margin, roomDimensions.depth / 2 - margin);
         const cameraRadius = 0.28;
-        const blockedByObject = collisionBoxes.some((box) =>
+        const blockedByObject = Array.from(collisionBoxes.entries()).some(([id, box]) =>
+          objectParticipatesInCollision(loadedObjects.get(id)?.item.name || "") &&
           nextX >= box.min.x - cameraRadius && nextX <= box.max.x + cameraRadius &&
           nextZ >= box.min.z - cameraRadius && nextZ <= box.max.z + cameraRadius
         );
@@ -295,7 +441,10 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
       cancelled = true;
       cancelAnimationFrame(frame);
       observer.disconnect();
-      renderer.domElement.removeEventListener("pointerup", handlePointerSelect);
+      renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+      renderer.domElement.removeEventListener("pointermove", handlePointerMove);
+      renderer.domElement.removeEventListener("pointerup", finishPointerDrag);
+      renderer.domElement.removeEventListener("pointercancel", finishPointerDrag);
       mount.removeEventListener("keydown", handleKeyDown);
       mount.removeEventListener("keyup", handleKeyUp);
       controls.dispose();
@@ -319,24 +468,44 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
       renderer.dispose();
       if (renderer.domElement.parentElement === mount) mount.removeChild(renderer.domElement);
     };
-  }, [roomDimensions.width, roomDimensions.depth, roomDimensions.height, placedObjects, appliedMaterials, mode, selectedObjectId, onSelectObject]);
+  }, [roomDimensions.width, roomDimensions.depth, roomDimensions.height, placedObjects, appliedMaterials, mode, selectedObjectId, onSelectObject, onUpdateObject, lockedObjectIds]);
 
   return (
     <div
       ref={mountRef as any}
       className="relative w-full h-full min-h-[420px] bg-slate-900 overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-      aria-label="Ambiente tridimensional da Prática 360º. Use W A S D ou setas após clicar na cena."
+      aria-label="Ambiente tridimensional da Prática 360º. Clique e arraste móveis. Use W A S D para caminhar."
       tabIndex={0}
     >
-      <div className="absolute left-3 bottom-3 z-10 max-w-sm rounded-xl border border-white/15 bg-slate-950/80 backdrop-blur px-3 py-2 text-white shadow-xl pointer-events-none">
+      <div className="absolute left-3 bottom-3 z-10 max-w-md rounded-xl border border-white/15 bg-slate-950/85 backdrop-blur px-3 py-2 text-white shadow-xl pointer-events-auto">
         <div className="flex items-center justify-between gap-4">
           <p className="text-[11px] font-black">Renderer 3D real · FASE 1</p>
           <span className="text-[10px] text-emerald-300">{loadedCount} GLB carregado(s)</span>
         </div>
         <p className="mt-1 text-[9px] leading-relaxed text-slate-300">
-          Clique em um objeto para selecioná-lo · W/A/S/D ou setas para caminhar · arraste para orbitar · roda para aproximar.
+          Arraste o móvel para reposicionar · W/A/S/D para caminhar · Shift + setas move 5 cm · Q/E gira 15°.
         </p>
-        {selectedObjectId && <p className="mt-1 text-[9px] text-sky-200">Objeto selecionado no projeto: {selectedObjectId}</p>}
+        {selectedObject && (
+          <div className="mt-2 border-t border-white/10 pt-2">
+            <div className="flex items-center justify-between gap-3">
+              <p className="min-w-0 truncate text-[10px] font-bold text-sky-200">{selectedObject.name}</p>
+              <span className={`shrink-0 rounded px-1.5 py-0.5 text-[8px] font-black uppercase ${selectedIsLocked ? "bg-amber-400/20 text-amber-200" : "bg-emerald-400/15 text-emerald-200"}`}>
+                {selectedIsLocked ? "Travado" : "Editável"}
+              </span>
+            </div>
+            {!selectedIsLocked && (
+              <div className="mt-2 grid grid-cols-6 gap-1" aria-label="Controles de posição do objeto selecionado">
+                <button type="button" onClick={() => applySelectedTransform({ x: selectedObject.x - 0.05 })} className="rounded bg-white/10 px-2 py-1 text-xs hover:bg-white/20" aria-label="Mover objeto para a esquerda">←</button>
+                <button type="button" onClick={() => applySelectedTransform({ y: selectedObject.y - 0.05 })} className="rounded bg-white/10 px-2 py-1 text-xs hover:bg-white/20" aria-label="Mover objeto para cima">↑</button>
+                <button type="button" onClick={() => applySelectedTransform({ y: selectedObject.y + 0.05 })} className="rounded bg-white/10 px-2 py-1 text-xs hover:bg-white/20" aria-label="Mover objeto para baixo">↓</button>
+                <button type="button" onClick={() => applySelectedTransform({ x: selectedObject.x + 0.05 })} className="rounded bg-white/10 px-2 py-1 text-xs hover:bg-white/20" aria-label="Mover objeto para a direita">→</button>
+                <button type="button" onClick={() => applySelectedTransform({ rotation: selectedObject.rotation - 15 })} className="rounded bg-sky-400/15 px-2 py-1 text-[10px] font-bold text-sky-100 hover:bg-sky-400/25" aria-label="Girar objeto 15 graus para a esquerda">−15°</button>
+                <button type="button" onClick={() => applySelectedTransform({ rotation: selectedObject.rotation + 15 })} className="rounded bg-sky-400/15 px-2 py-1 text-[10px] font-bold text-sky-100 hover:bg-sky-400/25" aria-label="Girar objeto 15 graus para a direita">+15°</button>
+              </div>
+            )}
+          </div>
+        )}
+        {interactionNotice && <p className="mt-1.5 text-[9px] leading-relaxed text-violet-200" role="status">{interactionNotice}</p>}
         {problems.length > 0 && (
           <p className="mt-1 text-[9px] leading-relaxed text-amber-300">
             {problems.length} item(ns) sem asset 3D compatível. Eles foram mantidos fora da cena em vez de virar blocos genéricos.

@@ -17,21 +17,29 @@
 - reset da dinâmica limpa os snapshots;
 - FPS aleatório removido e substituído por medição real via requestAnimationFrame;
 - rotação automática obsoleta do antigo 360 removida.
+- aplicação React completa recomposta na branch, incluindo telas, servidor, estilos e assets POC;
+- móveis podem ser arrastados diretamente na cena 3D;
+- snap espacial de 5 cm, limites da sala e bloqueio de sobreposição entre itens sólidos;
+- controles alternativos por botões, Shift + setas e Q/E, para não depender apenas do arraste;
+- posição e rotação do 3D atualizam o mesmo Project State usado pela planta 2D e pelo autosave;
+- itens travados no painel também ficam protegidos na cena 3D;
+- itens ocultos no painel não são renderizados no 3D;
+- BudgetModule legado passou a usar o mesmo Budget Engine e não soma piso ou paredes;
+- corrigida a ordem de inicialização do limite orçamentário, que poderia interromper a tela.
 
 ## Verificação realizada
-- transpile/sintaxe de 16 arquivos TS/TSX: 0 erros de sintaxe.
+- `tsc --noEmit`: aprovado;
+- build de produção Vite + servidor: aprovado;
+- testes de snap, limites, rotação e colisão: aprovados.
 
 ## Ainda não validado
-- build completo com dependências instaladas;
 - execução visual em navegador real nesta sessão;
 - qualidade fotorrealista final dos GLBs POC;
 - Unreal Engine/Pixel Streaming;
-- colisão física avançada e manipulação direta de móveis no 3D.
+- colisão física avançada com apoios verticais e montagem sobre superfícies.
 
 ## Próximas melhorias
-1. mover/rotacionar objetos diretamente no 3D com snap e teclado;
-2. sincronizar posição 3D -> Project State -> 2D -> orçamento;
-3. unificar definitivamente o antigo BudgetModule com Budget Engine;
-4. auditar e substituir os GLBs POC um por um;
-5. iniciar cadeira operacional, mesa, estação de dois monitores e luminária de piso como assets definitivos;
-6. depois avançar para equipamentos especializados: cabine acústica, audiômetro, imitanciômetro etc.
+1. auditar e substituir os GLBs POC um por um;
+2. iniciar cadeira operacional, mesa, estação de dois monitores e luminária de piso como assets definitivos;
+3. acrescentar regras de apoio em mesas, paredes e teto;
+4. depois avançar para equipamentos especializados: cabine acústica, audiômetro, imitanciômetro etc.

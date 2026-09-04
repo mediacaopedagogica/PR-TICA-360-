@@ -1,0 +1,12 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Arquivos de conversa usados apenas na recuperação local; não publicar no repositório.
+historico-recuperado/
+assets/.aistudio/

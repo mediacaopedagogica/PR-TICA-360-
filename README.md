@@ -10,5 +10,7 @@ Este repositório parte da base recuperada do projeto, incluindo o marco v151, a
 ## Regra principal
 Não reiniciar o projeto do zero. Preservar funcionalidades educacionais aprovadas e evoluir a camada espacial/3D progressivamente.
 
-## Próximo checkpoint
-Branch `fase1-poc-3d`: prova de conceito do Escritório da Designer com renderer 3D real, assets GLB/GLTF, escala real, interação, orçamento e salvamento.
+## Checkpoint atual
+Na branch `fase1-poc-3d`, a aplicação React completa já foi recomposta e validada. A prova de conceito do Escritório da Designer agora possui renderer Three.js, assets GLB/GLTF, escala real, seleção, manipulação direta, snap de 5 cm, colisão básica, orçamento integrado e salvamento.
+
+Os nove modelos atuais continuam marcados como **POC**. Eles validam o pipeline técnico, mas não representam a aprovação fotorrealista final da Materioteca.

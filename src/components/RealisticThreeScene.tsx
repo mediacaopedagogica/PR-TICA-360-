@@ -4,6 +4,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { AppliedMaterials, PlacedObject } from "../types";
 import { findThreeAssetByCatalogName } from "../threeAssetManifest";
+import { createSurfaceMaterial, disposeSurfaceMaterial } from "../threeMaterials";
 
 interface RealisticThreeSceneProps {
   roomDimensions: { width: number; depth: number; height: number };
@@ -19,14 +20,6 @@ interface AssetLoadProblem {
   name: string;
   reason: string;
 }
-
-const colorOf = (hex: string | undefined, fallback: string) => {
-  try {
-    return new THREE.Color(hex || fallback);
-  } catch {
-    return new THREE.Color(fallback);
-  }
-};
 
 /**
  * FASE 1 — renderer WebGL/Three.js.
@@ -98,18 +91,11 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
     fill.position.set(4, 3, -3);
     scene.add(fill);
 
-    const floorMaterial = new THREE.MeshStandardMaterial({
-      color: colorOf(appliedMaterials.floor?.color, "#c9b9a5"),
-      roughness: 0.62,
-      metalness: 0.02,
-      side: THREE.DoubleSide,
-    });
-    const wallBase = new THREE.MeshStandardMaterial({
-      color: colorOf(appliedMaterials.wallNorth?.color, "#f1f4f6"),
-      roughness: 0.88,
-      metalness: 0,
-      side: THREE.DoubleSide,
-    });
+    const floorMaterial = createSurfaceMaterial(appliedMaterials.floor, "#c9b9a5", "floor");
+    const northMat = createSurfaceMaterial(appliedMaterials.wallNorth, "#eef2f5", "wall");
+    const southMat = createSurfaceMaterial(appliedMaterials.wallSouth, "#eef2f5", "wall");
+    const eastMat = createSurfaceMaterial(appliedMaterials.wallEast, "#eef2f5", "wall");
+    const westMat = createSurfaceMaterial(appliedMaterials.wallWest, "#eef2f5", "wall");
 
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(roomDimensions.width, roomDimensions.depth), floorMaterial);
     floor.rotation.x = -Math.PI / 2;
@@ -133,10 +119,6 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
       return mesh;
     };
 
-    const northMat = wallBase.clone(); northMat.color = colorOf(appliedMaterials.wallNorth?.color, "#eef2f5");
-    const southMat = wallBase.clone(); southMat.color = colorOf(appliedMaterials.wallSouth?.color, "#eef2f5");
-    const eastMat = wallBase.clone(); eastMat.color = colorOf(appliedMaterials.wallEast?.color, "#eef2f5");
-    const westMat = wallBase.clone(); westMat.color = colorOf(appliedMaterials.wallWest?.color, "#eef2f5");
     createWall(roomDimensions.width, roomDimensions.height, wallThickness, 0, roomDimensions.height / 2, -roomDimensions.depth / 2, northMat);
     createWall(roomDimensions.width, roomDimensions.height, wallThickness, 0, roomDimensions.height / 2, roomDimensions.depth / 2, southMat);
     createWall(wallThickness, roomDimensions.height, roomDimensions.depth, -roomDimensions.width / 2, roomDimensions.height / 2, 0, westMat);
@@ -309,8 +291,8 @@ export const RealisticThreeScene: React.FC<RealisticThreeSceneProps> = ({
         });
       });
       floor.geometry.dispose();
-      floorMaterial.dispose();
-      northMat.dispose(); southMat.dispose(); eastMat.dispose(); westMat.dispose(); wallBase.dispose();
+      disposeSurfaceMaterial(floorMaterial);
+      disposeSurfaceMaterial(northMat); disposeSurfaceMaterial(southMat); disposeSurfaceMaterial(eastMat); disposeSurfaceMaterial(westMat);
       renderer.dispose();
       if (renderer.domElement.parentElement === mount) mount.removeChild(renderer.domElement);
     };
